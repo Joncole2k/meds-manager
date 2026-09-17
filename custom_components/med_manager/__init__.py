@@ -80,6 +80,14 @@ async def async_setup_entry(hass: HomeAssistant, entry):
 
         storage.mark_taken(med_id, now)
 
+        # ---------------------------------------------------------
+        # IMMEDIATE ENGINE RE-EVALUATION
+        # ---------------------------------------------------------
+        # Normally the engine evaluates medications every 30 seconds.
+        # Running a cycle here immediately updates the medication
+        # status and sends the entity update signal.
+        engine._tick()
+
         print(f"[MED SERVICE] TAKE -> {med_id}")
 
     # ---------------------------------------------------------
