@@ -1,4 +1,4 @@
-# ha-meds-manager
+# meds-manager
 A Home Assistant medication management integration with dynamic scheduling, actionable reminders, inventory tracking, and dose history.
 
 I found no good alternative for my wifes meds.  I needed something with dynamic scheduling so that if she takes a med late or wants to snooze it, that the interval picks up with the dynamic 'taken' time and not a fixed interval, which could cause problems, interactions with other meds, or over dosing.  So I'm building my own that meets my strict requirements.
