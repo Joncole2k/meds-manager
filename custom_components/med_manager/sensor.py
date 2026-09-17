@@ -27,7 +27,7 @@ They are routed through:
 """
 
 from homeassistant.components.sensor import SensorEntity  # HA sensor base class
-from homeassistant.core import HomeAssistant  # HA system reference
+from homeassistant.core import HomeAssistant, callback  # HA system reference + callback support
 from homeassistant.helpers.entity_platform import AddEntitiesCallback  # HA entity registration
 from homeassistant.config_entries import ConfigEntry  # HA config entry reference
 from homeassistant.helpers.dispatcher import async_dispatcher_connect  # Real-time update support
@@ -81,7 +81,7 @@ async def async_setup_entry(
     entities = []
 
     for med_id, med in meds.items():
-        entities.append(MedSensor(hass, med_id, med))
+        entities.append(MedSensor(hass, storage, med_id, med))
 
     # ---------------------------------------------------------
     # REGISTER ENTITIES
@@ -93,6 +93,7 @@ async def async_setup_entry(
     # ---------------------------------------------------------
     # Listen for medication changes from the engine/services.
     # When received, refresh every existing medication entity.
+    @callback
     def _handle_update(*_):
         """Refresh all medication entities after a data change."""
 
@@ -135,11 +136,12 @@ class MedSensor(SensorEntity):
         - inventory data
     """
 
-    def __init__(self, hass, med_id, data):
+    def __init__(self, hass, storage, med_id, data):
         # ---------------------------------------------------------
         # CORE REFERENCES
         # ---------------------------------------------------------
-        self.hass = hass
+        self._hass = hass
+        self._storage = storage
         self._med_id = med_id
         self._data = data
 
@@ -221,14 +223,9 @@ class MedSensor(SensorEntity):
         """
 
         # ---------------------------------------------------------
-        # STORAGE ACCESS
-        # ---------------------------------------------------------
-        storage = MedStorage(self.hass)
-
-        # ---------------------------------------------------------
         # REFRESH LOCAL STATE
         # ---------------------------------------------------------
-        latest_data = storage.get_med(self._med_id)
+        latest_data = self._storage.get_med(self._med_id)
 
         # ---------------------------------------------------------
         # UPDATE LOCAL DATA
