@@ -28,8 +28,9 @@ They are routed through:
 
 from homeassistant.components.sensor import SensorEntity  # HA sensor base class
 from homeassistant.core import HomeAssistant  # HA system reference
-from homeassistant.helpers.entity_platform import AddEntitiesCallback  # NEW (required)
-from homeassistant.config_entries import ConfigEntry  # NEW (required)
+from homeassistant.helpers.entity_platform import AddEntitiesCallback  # HA entity registration
+from homeassistant.config_entries import ConfigEntry  # HA config entry reference
+from homeassistant.helpers.dispatcher import async_dispatcher_connect  # Real-time update support
 
 from .storage import MedStorage  # shared data layer
 
@@ -38,6 +39,15 @@ from .storage import MedStorage  # shared data layer
 # DOMAIN IDENTIFIER
 # ---------------------------------------------------------
 DOMAIN = "med_manager"
+
+
+# ---------------------------------------------------------
+# DISPATCHER SIGNAL
+# ---------------------------------------------------------
+# This signal is sent whenever medication data changes.
+# The engine/services will use this signal to tell entities
+# that they need to refresh their state.
+SIGNAL_UPDATE = "med_manager_update"
 
 
 # ---------------------------------------------------------
@@ -51,7 +61,8 @@ async def async_setup_entry(
     """
     Creates sensor entities for all medications.
 
-    This runs once and builds entity list from storage.
+    This runs when the Meds Manager config entry is loaded
+    and builds the initial entity list from storage.
     """
 
     # ---------------------------------------------------------
@@ -71,11 +82,37 @@ async def async_setup_entry(
 
     for med_id, med in meds.items():
         entities.append(MedSensor(hass, med_id, med))
-        
+
     # ---------------------------------------------------------
     # REGISTER ENTITIES
     # ---------------------------------------------------------
     async_add_entities(entities, True)
+
+    # ---------------------------------------------------------
+    # DISPATCHER UPDATE SUPPORT
+    # ---------------------------------------------------------
+    # Listen for medication changes from the engine/services.
+    # When received, refresh every existing medication entity.
+    def _handle_update(*_):
+        """Refresh all medication entities after a data change."""
+
+        for entity in entities:
+            entity._refresh()
+            entity.async_write_ha_state()
+
+    # ---------------------------------------------------------
+    # REGISTER DISPATCHER LISTENER
+    # ---------------------------------------------------------
+    # Home Assistant automatically removes this listener when
+    # the config entry is unloaded.
+    entry.async_on_unload(
+        async_dispatcher_connect(
+            hass,
+            SIGNAL_UPDATE,
+            _handle_update,
+        )
+    )
+
 
 # ---------------------------------------------------------
 # MEDICATION SENSOR ENTITY
@@ -90,6 +127,7 @@ class MedSensor(SensorEntity):
         - overdue
         - not_due
         - snoozed
+        - not_initialized
 
     Attributes:
         - full medication metadata
@@ -111,12 +149,15 @@ class MedSensor(SensorEntity):
 
     @property
     def name(self):
-        return f"med_{self._med_id}"
+        # Medication IDs already contain the unique medication
+        # identifier, so do not add another "med_" prefix here.
+        return self._med_id
 
     @property
     def unique_id(self):
+        # Unique ID remains stable for the lifetime of the medication.
         return f"med_manager_{self._med_id}"
-        
+
     # ---------------------------------------------------------
     # STATE VALUE
     # ---------------------------------------------------------
@@ -174,9 +215,9 @@ class MedSensor(SensorEntity):
     # AUTO REFRESH SUPPORT
     # ---------------------------------------------------------
 
-    def update(self):
+    def _refresh(self):
         """
-        Pull latest state from storage every refresh cycle.
+        Pull the latest medication state from storage.
         """
 
         # ---------------------------------------------------------
@@ -187,4 +228,10 @@ class MedSensor(SensorEntity):
         # ---------------------------------------------------------
         # REFRESH LOCAL STATE
         # ---------------------------------------------------------
-        self._data = storage.get_med(self._med_id)
+        latest_data = storage.get_med(self._med_id)
+
+        # ---------------------------------------------------------
+        # UPDATE LOCAL DATA
+        # ---------------------------------------------------------
+        if latest_data is not None:
+            self._data = latest_data
