@@ -59,6 +59,14 @@ async def async_setup_entry(hass: HomeAssistant, entry):
     # STORAGE INITIALIZATION
     # ---------------------------------------------------------
     storage = MedStorage(hass)
+
+    # ---------------------------------------------------------
+    # LOAD PERSISTENT MEDICATION DATA
+    # ---------------------------------------------------------
+    # Load medications from Home Assistant persistent storage
+    # before starting the engine or creating entities.
+    await storage.async_load()
+
     hass.data[DOMAIN]["storage"] = storage
 
     # ---------------------------------------------------------
@@ -155,7 +163,7 @@ async def async_setup_entry(hass: HomeAssistant, entry):
         entry,
         ["sensor"]
     )
-    
+
     # ---------------------------------------------------------
     # FINAL STARTUP CONFIRMATION
     # ---------------------------------------------------------
