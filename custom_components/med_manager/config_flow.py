@@ -206,7 +206,9 @@ class MedManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             # -------------------------------------------------
             # STORE MEDICATION
             # -------------------------------------------------
-            storage.create_medication(med_id, data)
+            # Save the medication both to runtime storage and
+            # Home Assistant persistent storage.
+            await storage.async_create_medication(med_id, data)
 
             # -------------------------------------------------
             # FINISH FLOW (CREATE CONFIG ENTRY)
