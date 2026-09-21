@@ -47,9 +47,10 @@ async def async_setup_entry(
 
         for existing_id, entity in list(entities.items()):
             if storage.get_med(existing_id) is None:
-                # Mark unavailable, then remove on the next platform lifecycle.
-                # Home Assistant entities cannot be synchronously removed here.
-                entity.mark_removed()
+                # CGPT-STAMP: remove deleted entities rather than leaving stale
+                # dashboard state or an orphaned entity-registry record.
+                entity.async_remove(force_remove=True)
+                del entities[existing_id]
             else:
                 entity._refresh()
                 entity.async_write_ha_state()
@@ -68,7 +69,6 @@ class MedSensor(SensorEntity):
         self._storage = storage
         self._med_id = med_id
         self._data: dict = {}
-        self._removed = False
         self._refresh()
 
     @property
@@ -82,7 +82,7 @@ class MedSensor(SensorEntity):
 
     @property
     def native_value(self) -> str:
-        return "removed" if self._removed else self._data.get("status", "unknown")
+        return self._data.get("status", "unknown")
 
     @property
     def extra_state_attributes(self) -> dict:
@@ -94,7 +94,3 @@ class MedSensor(SensorEntity):
         current = self._storage.get_med(self._med_id)
         if current is not None:
             self._data = current
-
-    def mark_removed(self) -> None:
-        """Make a deleted medication visibly unavailable until reload."""
-        self._removed = True
