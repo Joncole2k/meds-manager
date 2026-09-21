@@ -1,13 +1,35 @@
-# Home Assistant - Meds Manager
-A Home Assistant medication management integration with dynamic scheduling, actionable reminders, inventory tracking, and dose history.
+# Meds Manager
 
-I found no good alternative for my wifes meds.  I needed something with dynamic scheduling so that if she takes a med late or wants to snooze it, that the interval picks up with the dynamic 'taken' time and not a fixed interval, which could cause problems, interactions with other meds, or over dosing.  So I'm building my own that meets my strict requirements.
+Meds Manager is a Home Assistant integration for interval-based medication
+tracking. It uses the time a dose was actually taken to calculate the next due
+time, so late doses safely shift the rolling schedule instead of following a
+fixed daily clock.
 
-This is still in BETA and is being tested for production to find errors and finish UI.
-It's only public so I can attach the depo to HACS for HAOS for testing.
-There are likely many things that will break, cause errors still, or just not work properly.
-There are still a number of features to be tested and added and will likely cause foundational changes until complete.
+> **Beta / safety note:** This project is for reminder and record-keeping
+> assistance. Validate it in your own Home Assistant instance before relying on
+> it, and do not treat it as medical advice or a substitute for professional
+> guidance.
 
-Foundational changes require deleting the integration, updating, restarting HA, and re-adding the integration.
-Therefore, I highly suggest you do NOT download this until Beta is complete, but I'm open to suggestions and ideas.
-If you do decide to download, do so at your own risk.  Don't say I didn't warn you :) 
+## What it provides
+
+- A Home Assistant setup flow for the first medication.
+- Dynamic medication sensors with states such as `not_due`, `due_soon`,
+  `due`, `overdue`, and `snoozed`.
+- Durable take, snooze, refill, create, and delete actions.
+- Inventory tracking and low-stock status.
+- Persistent Home Assistant notifications and automation events.
+- Medication data that survives restarts.
+
+## Installation and testing
+
+Install this repository through HACS as a custom integration, restart Home
+Assistant, and add **Meds Manager** from **Settings → Devices & services**.
+The first setup screen creates the integration and its first medication.
+Additional medications can be created with the `med_manager.create_medication`
+action. See [the testing checklist](docs/TESTING.md) before using it regularly.
+
+## Development notes
+
+CGPT-STAMP comments identify the 2026-09-21 reliability changes: persistent
+mutations, lifecycle cleanup, dynamic sensor management, complete services, and
+the removal of the recursive event bridge.
