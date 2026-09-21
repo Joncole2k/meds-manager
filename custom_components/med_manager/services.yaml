@@ -1,298 +1,101 @@
-# =========================================================
-# HA Meds Manager - Service Definitions
-# =========================================================
-#
-# This file defines Home Assistant service descriptions.
-#
-# It is used by:
-# - Developer Tools → Actions / Services
-# - Service UI forms
-# - Home Assistant documentation generation
-# - Future HACS releases
-#
-# NOTE:
-# This file ONLY documents services.
-# Actual service logic is implemented in __init__.py.
-#
-# =========================================================
-
-
-# =========================================================
-# TAKE MEDICATION
-# =========================================================
+# Meds Manager service descriptions.
+# CGPT-STAMP: 2026-09-21 reliable-lifecycle
+# Every documented service is registered in __init__.py and persists its result.
 
 take:
-  name: Take Medication
-  description: >
-    Marks a medication as taken.
-
-    Updates:
-    - last_taken timestamp
-    - next_due calculation
-    - inventory count
-    - medication schedule
-
+  name: Take medication
+  description: Records a dose, clears any snooze, reduces inventory by quantity, and immediately recalculates the schedule.
   fields:
-
     med_id:
-      name: Medication ID
-      description: >
-        Unique medication identifier.
-
-        Example:
-        john_tylenol
-        jane_ibuprofen
-
       required: true
-
-      example: "john_tylenol"
-
       selector:
         text:
-
-
-# =========================================================
-# SNOOZE MEDICATION
-# =========================================================
+    quantity:
+      default: 1
+      selector:
+        number:
+          min: 1
+          mode: box
 
 snooze:
-  name: Snooze Medication
-  description: >
-    Temporarily suppresses medication reminders.
-
-    Snoozing does NOT modify:
-    - last_taken
-    - interval schedule
-
-    It ONLY delays notifications until the selected time.
-
+  name: Snooze medication
+  description: Temporarily suppresses reminders without changing the dose schedule.
   fields:
-
     med_id:
-      name: Medication ID
-      description: >
-        Unique medication identifier.
-
       required: true
-
-      example: "john_tylenol"
-
       selector:
         text:
-
     minutes:
-      name: Snooze Minutes
-      description: >
-        Number of minutes to suppress notifications.
-
-        Examples:
-        15
-        30
-        60
-        360
-
       required: true
-
       default: 60
-
       selector:
         number:
           min: 1
           max: 1440
           mode: box
 
-
-# =========================================================
-# REFILL MEDICATION
-# =========================================================
-
 refill:
-  name: Refill Medication
-  description: >
-    Updates medication inventory count.
-
-    This is used when:
-    - a new bottle is opened
-    - inventory is manually corrected
-    - stock is replenished
-
+  name: Refill medication
+  description: Sets the current inventory count and clears the refill warning.
   fields:
-
     med_id:
-      name: Medication ID
-      description: >
-        Unique medication identifier.
-
       required: true
-
-      example: "john_tylenol"
-
       selector:
         text:
-
     amount:
-      name: New Inventory Amount
-      description: >
-        New inventory count after refill.
-
-        Examples:
-        50
-        100
-        250
-
       required: true
-
-      example: 100
-
       selector:
         number:
           min: 0
           mode: box
 
-
-# =========================================================
-# CREATE MEDICATION
-# =========================================================
-
 create_medication:
-  name: Create Medication
-  description: >
-    Creates a new medication entry.
-
-    This service is intended for:
-    - dashboards
-    - automations
-    - future UI forms
-    - future config flow integration
-
+  name: Create medication
+  description: Adds a medication, saves it, and creates its sensor without restarting Home Assistant.
   fields:
-
     med_id:
-      name: Medication ID
-      description: >
-        Unique identifier.
-
-        Recommended format:
-
-        person_medication
-
-        Example:
-        john_tylenol
-
       required: true
-
       selector:
         text:
-
     common_name:
-      name: Common Name
-      description: >
-        Human-friendly medication name.
-
       required: true
-
       selector:
         text:
-
-    generic_name:
-      name: Generic Name
-      description: >
-        Generic medication name.
-
-      required: false
-
-      selector:
-        text:
-
-    brand_name:
-      name: Brand Name
-      description: >
-        Brand or manufacturer name.
-
-      required: false
-
-      selector:
-        text:
-
     person:
-      name: Person
-      description: >
-        Person taking the medication.
-
       required: true
-
       selector:
         text:
-
     interval_hours:
-      name: Interval Hours
-      description: >
-        Time between doses.
-
-        Examples:
-        4
-        6
-        8
-        12
-        24
-
       required: true
-
       selector:
         number:
           min: 1
           max: 168
           mode: box
-
+    generic_name:
+      selector:
+        text:
+    brand_name:
+      selector:
+        text:
     current_count:
-      name: Current Inventory
-      description: >
-        Current medication count.
-
-      required: false
-
       default: 0
-
       selector:
         number:
           min: 0
           mode: box
-
     low_stock_threshold:
-      name: Low Stock Threshold
-      description: >
-        Inventory level that triggers low stock warnings.
-
-      required: false
-
-      default: 10
-
+      default: 5
       selector:
         number:
           min: 0
           mode: box
-
-
-# =========================================================
-# DELETE MEDICATION
-# =========================================================
 
 delete_medication:
-  name: Delete Medication
-  description: >
-    Permanently removes a medication from the system.
-
-    WARNING:
-    This action cannot be undone.
-
+  name: Delete medication
+  description: Permanently removes a medication and its sensor.
   fields:
-
     med_id:
-      name: Medication ID
-      description: >
-        Unique medication identifier.
-
       required: true
-
       selector:
         text:
