@@ -1,172 +1,149 @@
-"""
-HA Meds Manager - Final Integration Bootstrap
+"""Home Assistant setup and services for Meds Manager.
 
-This file is the MAIN ENTRY POINT for Home Assistant.
-
-===========================================================
-CORE SYSTEM BOOTSTRAP
-===========================================================
-- initializes storage layer
-- initializes engine layer
-- wires runtime dependencies
-
-===========================================================
-SERVICE LAYER (USER ACTIONS)
-===========================================================
-- mark medication as taken
-- snooze medication alerts
-- refill medication inventory
-
-===========================================================
-EVENT SYSTEM BINDING
-===========================================================
-- listens to engine events
-- bridges engine → Home Assistant event bus
-
-===========================================================
-FUTURE UI / ENTITY SYSTEM SUPPORT
-===========================================================
-- prepares structure for sensor.med_*
-- ensures compatibility with Lovelace dashboards
+CGPT-STAMP: 2026-09-21 reliable-lifecycle
+There is one integration config entry, one shared store, and one engine. Services
+make durable state changes, then immediately refresh scheduling and sensors.
 """
 
 from datetime import datetime, timezone
 
+import voluptuous as vol
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 
+from .coordinator import MedEngine, SIGNAL_UPDATE
 from .storage import MedStorage
-from .coordinator import MedEngine
 
-
-# ---------------------------------------------------------
-# DOMAIN IDENTIFIER
-# ---------------------------------------------------------
 DOMAIN = "med_manager"
+PLATFORMS = [Platform.SENSOR]
 
 
-# ---------------------------------------------------------
-# INTEGRATION SETUP ENTRYPOINT
-# ---------------------------------------------------------
-async def async_setup_entry(hass: HomeAssistant, entry):
-    """Initialize Meds Manager from UI (HACS install path)."""
+def _require_medication(storage: MedStorage, med_id: str) -> None:
+    """Raise a clear action error instead of silently ignoring an unknown ID."""
+    if not med_id or storage.get_med(med_id) is None:
+        raise HomeAssistantError(f"Unknown medication ID: {med_id}")
 
-    # ---------------------------------------------------------
-    # CORE NAMESPACE INITIALIZATION
-    # ---------------------------------------------------------
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Load the sole integration entry and initialize all runtime components."""
     hass.data.setdefault(DOMAIN, {})
 
-    # ---------------------------------------------------------
-    # STORAGE INITIALIZATION
-    # ---------------------------------------------------------
     storage = MedStorage(hass)
-
-    # ---------------------------------------------------------
-    # LOAD PERSISTENT MEDICATION DATA
-    # ---------------------------------------------------------
-    # Load medications from Home Assistant persistent storage
-    # before starting the engine or creating entities.
     await storage.async_load()
+    engine = MedEngine(hass, storage)
+    hass.data[DOMAIN].update({"storage": storage, "engine": engine})
 
-    hass.data[DOMAIN]["storage"] = storage
+    async def handle_take(call: ServiceCall) -> None:
+        """Persist a taken dose, then refresh schedule and entities immediately."""
+        med_id = call.data["med_id"]
+        _require_medication(storage, med_id)
+        quantity = call.data.get("quantity", 1)
+        await storage.async_mark_taken(
+            med_id, datetime.now(timezone.utc).timestamp(), quantity
+        )
+        await engine.async_tick()
+        async_dispatcher_send(hass, SIGNAL_UPDATE, med_id)
 
-    # ---------------------------------------------------------
-    # ENGINE INITIALIZATION
-    # ---------------------------------------------------------
-    engine = MedEngine(hass)
-    hass.data[DOMAIN]["engine"] = engine
+    async def handle_snooze(call: ServiceCall) -> None:
+        """Persist a snooze interval, then refresh the visible status."""
+        med_id = call.data["med_id"]
+        _require_medication(storage, med_id)
+        until = datetime.now(timezone.utc).timestamp() + call.data["minutes"] * 60
+        await storage.async_snooze(med_id, until)
+        await engine.async_tick()
+        async_dispatcher_send(hass, SIGNAL_UPDATE, med_id)
 
-    await engine.async_start()
+    async def handle_refill(call: ServiceCall) -> None:
+        """Persist inventory replacement, then refresh refill status."""
+        med_id = call.data["med_id"]
+        _require_medication(storage, med_id)
+        await storage.async_refill(med_id, call.data["amount"])
+        await engine.async_tick()
+        async_dispatcher_send(hass, SIGNAL_UPDATE, med_id)
 
-    # ---------------------------------------------------------
-    # SERVICE: TAKE MEDICATION
-    # ---------------------------------------------------------
-    async def handle_take(call: ServiceCall):
-        """Mark medication as taken."""
+    async def handle_create_medication(call: ServiceCall) -> None:
+        """Create a medication through automations or dashboard actions.
 
-        med_id = call.data.get("med_id")
-        now = datetime.now(timezone.utc).timestamp()
+        CGPT-STAMP: A targeted dispatcher message lets sensor.py add the new
+        entity without a Home Assistant restart or config-entry reload.
+        """
+        med_id = call.data["med_id"]
+        if storage.get_med(med_id) is not None:
+            raise HomeAssistantError(f"Medication ID already exists: {med_id}")
+        await storage.async_create_medication(
+            med_id,
+            {
+                "common_name": call.data["common_name"],
+                "generic_name": call.data.get("generic_name"),
+                "brand_name": call.data.get("brand_name"),
+                "person": call.data["person"],
+                "interval_hours": call.data["interval_hours"],
+                "last_taken": None,
+                "next_due": None,
+                "status": "not_initialized",
+                "snooze_until": None,
+                "last_notified": None,
+                "notification_count": 0,
+                "current_count": call.data.get("current_count", 0),
+                "low_stock_threshold": call.data.get("low_stock_threshold", 5),
+                "refill_required": False,
+            },
+        )
+        await engine.async_tick()
+        async_dispatcher_send(hass, SIGNAL_UPDATE, med_id)
 
-        storage.mark_taken(med_id, now)
+    async def handle_delete_medication(call: ServiceCall) -> None:
+        """Permanently remove a medication and its dynamic sensor."""
+        med_id = call.data["med_id"]
+        _require_medication(storage, med_id)
+        await storage.async_delete_medication(med_id)
+        async_dispatcher_send(hass, SIGNAL_UPDATE, med_id)
 
-        # ---------------------------------------------------------
-        # IMMEDIATE ENGINE RE-EVALUATION
-        # ---------------------------------------------------------
-        # Normally the engine evaluates medications every 30 seconds.
-        # Running a cycle here immediately updates the medication
-        # status and sends the entity update signal.
-        engine._tick()
-
-        print(f"[MED SERVICE] TAKE -> {med_id}")
-
-    # ---------------------------------------------------------
-    # SERVICE: SNOOZE MEDICATION
-    # ---------------------------------------------------------
-    async def handle_snooze(call: ServiceCall):
-        """Snooze medication reminders."""
-
-        med_id = call.data.get("med_id")
-        minutes = call.data.get("minutes", 0)
-
-        snooze_until = datetime.now(timezone.utc).timestamp() + (minutes * 60)
-
-        storage.snooze(med_id, snooze_until)
-
-        print(f"[MED SERVICE] SNOOZE -> {med_id} ({minutes} min)")
-
-    # ---------------------------------------------------------
-    # SERVICE: REFILL MEDICATION
-    # ---------------------------------------------------------
-    async def handle_refill(call: ServiceCall):
-        """Refill medication inventory."""
-
-        med_id = call.data.get("med_id")
-        amount = call.data.get("amount", 0)
-
-        storage.refill(med_id, amount)
-
-        print(f"[MED SERVICE] REFILL -> {med_id} ({amount})")
-
-    # ---------------------------------------------------------
-    # REGISTER SERVICES
-    # ---------------------------------------------------------
-    hass.services.async_register(DOMAIN, "take", handle_take)
-    hass.services.async_register(DOMAIN, "snooze", handle_snooze)
-    hass.services.async_register(DOMAIN, "refill", handle_refill)
-
-    # ---------------------------------------------------------
-    # EVENT BRIDGE
-    # ---------------------------------------------------------
-
-    def _event_listener(event):
-        """Bridge engine events into HA event bus."""
-
-        event_type = getattr(event, "event_type", None)
-        data = getattr(event, "data", None)
-
-        if not event_type:
-            return
-
-        print(f"[MED EVENT] {event_type} -> {data}")
-
-        hass.bus.fire(event_type, data)
-
-    # Listen to engine events
-    hass.bus.async_listen("med_manager_due", _event_listener)
-    hass.bus.async_listen("med_manager_due_soon", _event_listener)
-    hass.bus.async_listen("med_manager_overdue", _event_listener)
-    hass.bus.async_listen("med_manager_snoozed", _event_listener)
-
-    # ---------------------------------------------------------
-    # CRITICAL: FORWARD TO SENSOR PLATFORM
-    # ---------------------------------------------------------
-    await hass.config_entries.async_forward_entry_setups(
-        entry,
-        ["sensor"]
+    # CGPT-STAMP: schemas validate inputs at the service boundary.
+    hass.services.async_register(
+        DOMAIN, "take", handle_take,
+        schema=vol.Schema({vol.Required("med_id"): str, vol.Optional("quantity", default=1): vol.All(int, vol.Range(min=1))}),
+    )
+    hass.services.async_register(
+        DOMAIN, "snooze", handle_snooze,
+        schema=vol.Schema({vol.Required("med_id"): str, vol.Required("minutes"): vol.All(int, vol.Range(min=1, max=1440))}),
+    )
+    hass.services.async_register(
+        DOMAIN, "refill", handle_refill,
+        schema=vol.Schema({vol.Required("med_id"): str, vol.Required("amount"): vol.All(int, vol.Range(min=0))}),
+    )
+    hass.services.async_register(
+        DOMAIN, "create_medication", handle_create_medication,
+        schema=vol.Schema({
+            vol.Required("med_id"): str, vol.Required("common_name"): str,
+            vol.Required("person"): str, vol.Required("interval_hours"): vol.All(int, vol.Range(min=1)),
+            vol.Optional("generic_name"): str, vol.Optional("brand_name"): str,
+            vol.Optional("current_count", default=0): vol.All(int, vol.Range(min=0)),
+            vol.Optional("low_stock_threshold", default=5): vol.All(int, vol.Range(min=0)),
+        }),
+    )
+    hass.services.async_register(
+        DOMAIN, "delete_medication", handle_delete_medication,
+        schema=vol.Schema({vol.Required("med_id"): str}),
     )
 
-    # ---------------------------------------------------------
-    # FINAL STARTUP CONFIRMATION
-    # ---------------------------------------------------------
-    print("[MED MANAGER] Integration fully initialized and running")
-
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    await engine.async_start()
     return True
+
+
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Unload cleanly so reloads cannot leave duplicate loops or services."""
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    engine = hass.data.get(DOMAIN, {}).get("engine")
+    if engine is not None:
+        await engine.async_stop()
+
+    # One config entry is enforced by config_flow. Remove handlers on unload.
+    for service in ("take", "snooze", "refill", "create_medication", "delete_medication"):
+        hass.services.async_remove(DOMAIN, service)
+    hass.data.pop(DOMAIN, None)
+    return unload_ok
