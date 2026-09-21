@@ -1,266 +1,107 @@
-"""
-HA Meds Manager - Storage Layer (FINAL PRODUCT MODEL)
+"""Persistent medication storage for Meds Manager.
 
-This file defines the COMPLETE medication data structure used across:
-- Engine (scheduling + evaluation)
-- Services (take / snooze / refill / create / delete)
-- Notifications
-- Future entities (sensor.med_*)
-- Future UI dashboards (Lovelace cards)
-
-This is the SINGLE SOURCE OF TRUTH for all medication state.
+CGPT-STAMP: 2026-09-21 reliable-lifecycle
+This module is the single source of truth. Every public async mutation saves
+before it returns, so Home Assistant restarts cannot discard user actions.
 """
 
-from datetime import datetime, timezone  # Timestamp handling
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
 
-from homeassistant.core import HomeAssistant  # Home Assistant access
-from homeassistant.helpers.storage import Store  # Home Assistant persistent storage
-
-
-# ---------------------------------------------------------
-# DOMAIN IDENTIFIER
-# ---------------------------------------------------------
 DOMAIN = "med_manager"
-
-# ---------------------------------------------------------
-# STORAGE VERSION
-# ---------------------------------------------------------
 STORAGE_VERSION = 1
-
-# ---------------------------------------------------------
-# STORAGE KEY
-# ---------------------------------------------------------
 STORAGE_KEY = "medications"
 
 
 class MedStorage:
-    """
-    Central medication storage system.
+    """Own the in-memory database and its Home Assistant persistent store."""
 
-    This class handles:
-    - persistence via Home Assistant storage
-    - full medication schema storage
-    - state tracking for engine + UI + entities
-    """
-
-    def __init__(self, hass: HomeAssistant):
-        # Store Home Assistant instance
+    def __init__(self, hass: HomeAssistant) -> None:
         self.hass = hass
-
-        # ---------------------------------------------------------
-        # PERSISTENT STORAGE
-        # ---------------------------------------------------------
-        # Home Assistant stores this data in its .storage directory.
-        # The data survives Home Assistant restarts.
-        self._store = Store(
-            hass,
-            STORAGE_VERSION,
-            f"{DOMAIN}.{STORAGE_KEY}",
-        )
-
-        # ---------------------------------------------------------
-        # INTEGRATION NAMESPACE
-        # ---------------------------------------------------------
-        # Runtime references are still kept in hass.data so the
-        # engine, services, and entities can access the same data.
+        self._store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{STORAGE_KEY}")
         self.hass.data.setdefault(DOMAIN, {})
-
-        # ---------------------------------------------------------
-        # MEDICATION STORE
-        # ---------------------------------------------------------
-        # This is populated by async_load() during integration startup.
         self.hass.data[DOMAIN].setdefault("medications", {})
 
-    # ---------------------------------------------------------
-    # PERSISTENCE INITIALIZATION
-    # ---------------------------------------------------------
-
-    async def async_load(self):
-        """
-        Load medication data from Home Assistant persistent storage.
-
-        This must be called once during integration startup before
-        the medication engine or entities begin using the data.
-        """
-
-        # ---------------------------------------------------------
-        # LOAD PERSISTED DATA
-        # ---------------------------------------------------------
+    async def async_load(self) -> None:
+        """Load persisted records once, accepting only the expected mapping."""
         stored_data = await self._store.async_load()
+        medications = (
+            stored_data.get("medications", {})
+            if isinstance(stored_data, dict)
+            else {}
+        )
+        self.hass.data[DOMAIN]["medications"] = (
+            medications if isinstance(medications, dict) else {}
+        )
 
-        # ---------------------------------------------------------
-        # VALIDATE STORED DATA
-        # ---------------------------------------------------------
-        if isinstance(stored_data, dict):
-            medications = stored_data.get("medications", {})
+    async def async_save(self) -> None:
+        """Durably write the complete medication database."""
+        await self._store.async_save(
+            {"medications": self.hass.data[DOMAIN]["medications"]}
+        )
 
-            if isinstance(medications, dict):
-                self.hass.data[DOMAIN]["medications"] = medications
-                return
-
-        # ---------------------------------------------------------
-        # INITIAL EMPTY STATE
-        # ---------------------------------------------------------
-        # No medication data exists yet.
-        #
-        # IMPORTANT:
-        # We intentionally do NOT create demo medication here.
-        # A new installation should start empty and only contain
-        # medications that the user actually creates.
-        self.hass.data[DOMAIN]["medications"] = {}
-
-        await self.async_save()
-
-    # ---------------------------------------------------------
-    # PERSISTENT SAVE
-    # ---------------------------------------------------------
-
-    async def async_save(self):
-        """
-        Save the current medication database to persistent storage.
-        """
-
-        # ---------------------------------------------------------
-        # BUILD STORAGE DATA
-        # ---------------------------------------------------------
-        data = {
-            "medications": self.hass.data[DOMAIN]["medications"]
-        }
-
-        # ---------------------------------------------------------
-        # WRITE STORAGE
-        # ---------------------------------------------------------
-        await self._store.async_save(data)
-
-    # ---------------------------------------------------------
-    # CORE ACCESS METHODS
-    # ---------------------------------------------------------
-
-    def get_all(self):
-        """Return all medication records."""
+    def get_all(self) -> dict:
+        """Return the live medication mapping."""
         return self.hass.data[DOMAIN]["medications"]
 
-    def get_med(self, med_id):
-        """Get single medication record."""
-        return self.hass.data[DOMAIN]["medications"].get(med_id)
+    def get_med(self, med_id: str) -> dict | None:
+        """Return one medication, or None when the ID is unknown."""
+        return self.get_all().get(med_id)
 
-    def update_med(self, med_id, data):
-        """Update full medication record."""
-        self.hass.data[DOMAIN]["medications"][med_id] = data
+    def update_med(self, med_id: str, data: dict) -> None:
+        """Update runtime state; callers must save or use an async helper."""
+        self.get_all()[med_id] = data
 
-    # ---------------------------------------------------------
-    # USER ACTION METHODS (SERVICES)
-    # ---------------------------------------------------------
+    async def async_create_medication(self, med_id: str, data: dict) -> None:
+        """Create a medication and save it before returning."""
+        self.get_all()[med_id] = data
+        await self.async_save()
 
-    def mark_taken(self, med_id, timestamp):
-        """User action: medication taken."""
+    async def async_delete_medication(self, med_id: str) -> bool:
+        """Delete a medication and return whether it existed."""
+        if med_id not in self.get_all():
+            return False
+        del self.get_all()[med_id]
+        await self.async_save()
+        return True
+
+    async def async_mark_taken(
+        self, med_id: str, timestamp: float, quantity: int = 1
+    ) -> dict | None:
+        """Record a dose, clear a snooze, decrement stock, and save.
+
+        CGPT-STAMP: Taking a dose is intentionally one durable transaction.
+        """
         med = self.get_med(med_id)
-        if not med:
-            return
-
+        if med is None:
+            return None
         med["last_taken"] = timestamp
         med["snooze_until"] = None
-
+        if med.get("current_count") is not None:
+            med["current_count"] = max(0, int(med["current_count"]) - quantity)
         self.update_med(med_id, med)
-
-    # ---------------------------------------------------------
-    # USER ACTION PERSISTENCE
-    # ---------------------------------------------------------
-
-    async def async_mark_taken(self, med_id, timestamp):
-        """User action: medication taken with persistent storage."""
-        self.mark_taken(med_id, timestamp)
         await self.async_save()
+        return med
 
-    def snooze(self, med_id, until_timestamp):
-        """User action: snooze medication alerts."""
+    async def async_snooze(
+        self, med_id: str, until_timestamp: float
+    ) -> dict | None:
+        """Snooze a known medication and save it."""
         med = self.get_med(med_id)
-        if not med:
-            return
-
+        if med is None:
+            return None
         med["snooze_until"] = until_timestamp
         self.update_med(med_id, med)
-
-    # ---------------------------------------------------------
-    # USER ACTION PERSISTENCE
-    # ---------------------------------------------------------
-
-    async def async_snooze(self, med_id, until_timestamp):
-        """User action: snooze medication alerts with persistent storage."""
-        self.snooze(med_id, until_timestamp)
         await self.async_save()
+        return med
 
-    def mark_notified(self, med_id, timestamp):
-        """Engine action: tracks notifications to prevent spam."""
+    async def async_refill(self, med_id: str, amount: int) -> dict | None:
+        """Set the current inventory count and save it."""
         med = self.get_med(med_id)
-        if not med:
-            return
-
-        med["last_notified"] = timestamp
-        med["notification_count"] = med.get("notification_count", 0) + 1
-
-        self.update_med(med_id, med)
-
-    # ---------------------------------------------------------
-    # ENGINE PERSISTENCE
-    # ---------------------------------------------------------
-
-    async def async_mark_notified(self, med_id, timestamp):
-        """Engine action: notification tracking with persistent storage."""
-        self.mark_notified(med_id, timestamp)
-        await self.async_save()
-
-    # ---------------------------------------------------------
-    # INVENTORY / REFILL SYSTEM
-    # ---------------------------------------------------------
-
-    def refill(self, med_id, amount):
-        """Update medication inventory after refill."""
-        med = self.get_med(med_id)
-        if not med:
-            return
-
+        if med is None:
+            return None
         med["current_count"] = amount
         med["refill_required"] = False
-
         self.update_med(med_id, med)
-
-    # ---------------------------------------------------------
-    # INVENTORY PERSISTENCE
-    # ---------------------------------------------------------
-
-    async def async_refill(self, med_id, amount):
-        """Update medication inventory with persistent storage."""
-        self.refill(med_id, amount)
         await self.async_save()
-
-    # ---------------------------------------------------------
-    # CREATE / DELETE MEDICATION
-    # ---------------------------------------------------------
-
-    def create_medication(self, med_id, data):
-        """Create a new medication entry."""
-        self.hass.data[DOMAIN]["medications"][med_id] = data
-
-    # ---------------------------------------------------------
-    # CREATE PERSISTENCE
-    # ---------------------------------------------------------
-
-    async def async_create_medication(self, med_id, data):
-        """Create a new medication entry with persistent storage."""
-        self.create_medication(med_id, data)
-        await self.async_save()
-
-    def delete_medication(self, med_id):
-        """Delete medication entry."""
-        if med_id in self.hass.data[DOMAIN]["medications"]:
-            del self.hass.data[DOMAIN]["medications"][med_id]
-
-    # ---------------------------------------------------------
-    # DELETE PERSISTENCE
-    # ---------------------------------------------------------
-
-    async def async_delete_medication(self, med_id):
-        """Delete medication entry with persistent storage."""
-        self.delete_medication(med_id)
-        await self.async_save()
+        return med
